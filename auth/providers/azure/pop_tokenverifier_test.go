@@ -149,7 +149,7 @@ const (
 	atCnfClaimWrong     = "atCnfClaimWrong"
 )
 
-func GeneratePoPToken(ts int64, hostName, kid string) (string, error) {
+func GeneratePoPToken(ts int64, hostName, kid, nonce string) (string, error) {
 	if strings.Contains(kid, badTokenKey) {
 		return kid, nil
 	}
@@ -182,7 +182,9 @@ func GeneratePoPToken(ts int64, hostName, kid string) (string, error) {
 		return "", fmt.Errorf("Error when generating token. Error:%+v", err)
 	}
 	var header, headerB64 string
-	nonce := uuid.New().String()
+	if nonce == "" {
+		nonce = uuid.New().String()
+	}
 	nonce = strings.Replace(nonce, "-", "", -1)
 	keyID := popKey.KeyID()
 	algo := popKey.Alg()
@@ -239,63 +241,67 @@ func GeneratePoPToken(ts int64, hostName, kid string) (string, error) {
 func TestPopTokenVerifier_Verify(t *testing.T) {
 	verifier := NewPoPVerifier("testHostname", 15*time.Minute)
 
-	validToken, _ := GeneratePoPToken(time.Now().Unix(), "testHostname", "")
+	validToken, _ := GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce")
 	_, err := verifier.ValidatePopToken(validToken)
 	assert.NoError(t, err)
 
-	invalidToken, _ := GeneratePoPToken(time.Now().Unix(), "", badTokenKey)
+	validToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce")
+	_, err = verifier.ValidatePopToken(validToken)
+	assert.EqualError(t, err, "Invalid token. 'nonce' claim is reused")
+
+	invalidToken, _ := GeneratePoPToken(time.Now().Unix(), "", badTokenKey, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "PoP token invalid schema. Token length: 1")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", fmt.Sprintf("%s.%s.%s", badTokenKey, badTokenKey, badTokenKey))
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", fmt.Sprintf("%s.%s.%s", badTokenKey, badTokenKey, badTokenKey), "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Could not parse PoP token. Error: invalid character 'm' looking for beginning of value")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadKeyID)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadKeyID, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "No KeyID found in PoP token header")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadAlgo)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadAlgo, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Wrong algorithm found in PoP token header, expected 'RS256' having 'wrong'")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadtyp)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadtyp, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Wrong typ. Expected 'pop' having 'wrong'")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadtypMissing)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", headerBadtypMissing, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Invalid token. 'typ' claim is missing")
 
-	expiredToken, _ := GeneratePoPToken(time.Now().Add(time.Minute*-20).Unix(), "", "")
+	expiredToken, _ := GeneratePoPToken(time.Now().Add(time.Minute*-20).Unix(), "", "", "")
 	_, err = verifier.ValidatePopToken(expiredToken)
 	assert.NotNilf(t, err, "PoP verification succeed.")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", tsClaimsMissing)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", tsClaimsMissing, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Invalid token. 'ts' claim is missing")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "wrongHostnme", "")
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "wrongHostnme", "", "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Invalid Pop token due to host mismatch. Expected: \"testHostname\", received: \"wrongHostnme\"")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", uClaimsMissing)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", uClaimsMissing, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Invalid token. 'u' claim is missing")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", cnfClaimsMissing)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", cnfClaimsMissing, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Invalid token. 'cnf' claim is missing")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", cnfJwkClaimsWrong)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", cnfJwkClaimsWrong, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Invalid token. 'jwk' claim is empty")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", atCnfClaimMissing)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", atCnfClaimMissing, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "could not retrieve 'cnf' claim from access token")
 
-	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", atCnfClaimWrong)
+	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", atCnfClaimWrong, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "PoP token validate failed: 'cnf' claim mismatch")
 }

@@ -34,6 +34,13 @@ import (
 	"k8s.io/klog/v2"
 )
 
+var (
+	// create a cache to save nonce claim to make sure the nonce is not reused
+	nonceMap = make(map[string]time.Time)
+	// counter to keep track of the number of nonce claims in the cache
+	nonceMapCounter = 0
+)
+
 // PopTokenVerifier is validator for PoP tokens.
 type PoPTokenVerifier struct {
 	hostName                 string
@@ -135,6 +142,28 @@ func (p *PoPTokenVerifier) ValidatePopToken(token string) (string, error) {
 	} else {
 		return "", errors.Errorf("Invalid token. 'u' claim is missing")
 	}
+
+	// Verify host 'nonce' claim
+	if nonce, ok := claims["nonce"]; ok {
+		if _, ok := nonce.(string); !ok {
+			return "", errors.Errorf("Invalid token. 'nonce' claim should be of string")
+		}
+	} else {
+		return "", errors.Errorf("Invalid token. 'nonce' claim is missing")
+	}
+	// Making sure nonce is not reused
+	if _, ok := nonceMap[claims["nonce"].(string)]; ok {
+		return "", errors.Errorf("Invalid token. 'nonce' claim is reused")
+	}
+	nonceMap[claims["nonce"].(string)] = time.Now()
+	nonceMapCounter++
+	klog.V(6).Infof("nonce claim added to the cache. Cache size is: %d", nonceMapCounter)
+	// Cleaning cached nonce token after PoPTokenValidityDuration minutes + 1 minute
+	go func() {
+		time.Sleep((p.PoPTokenValidityDuration + 1) * time.Minute)
+		delete(nonceMap, claims["nonce"].(string))
+		nonceMapCounter--
+	}()
 
 	// "cnf" (confirmation) claim used to cryptographically confirm
 	// that the presenter has possession of that key.
