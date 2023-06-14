@@ -245,6 +245,7 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 	_, err := verifier.ValidatePopToken(validToken)
 	assert.NoError(t, err)
 
+	// Test for replay attack
 	validToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce")
 	_, err = verifier.ValidatePopToken(validToken)
 	assert.EqualError(t, err, "Invalid token. 'nonce' claim is reused")
