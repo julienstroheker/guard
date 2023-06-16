@@ -182,15 +182,17 @@ func (p *PoPTokenVerifier) ValidatePopToken(token string) (string, error) {
 	}
 
 	// Verify host 'nonce' claim
-	if nonce, ok := claims["nonce"]; ok {
-		if _, ok := nonce.(string); !ok {
+	var nonce string
+	if nonceClaim, ok := claims["nonce"]; ok {
+		if _, ok := nonceClaim.(string); !ok {
 			return "", errors.Errorf("Invalid token. 'nonce' claim should be of string")
 		}
+		nonce = nonceClaim.(string)
 	} else {
 		return "", errors.Errorf("Invalid token. 'nonce' claim is missing")
 	}
 	// Making sure nonce is not reused
-	err = nonceMap.AddToCache(claims["nonce"].(string))
+	err = nonceMap.AddToCache(nonce)
 	if err != nil {
 		return "", errors.Errorf("Invalid token. 'nonce' claim is reused")
 	}
@@ -198,7 +200,7 @@ func (p *PoPTokenVerifier) ValidatePopToken(token string) (string, error) {
 	// Cleaning cached nonce token after PoPTokenValidityDuration minutes + 1 minute
 	go func() {
 		time.Sleep((p.PoPTokenValidityDuration + p.mapCacheRetentionBuffer))
-		nonceMap.RemoveFromCache(claims["nonce"].(string))
+		nonceMap.RemoveFromCache(nonce)
 	}()
 
 	// "cnf" (confirmation) claim used to cryptographically confirm
