@@ -147,6 +147,7 @@ const (
 	cnfJwkClaimsWrong   = "cnfJwkClaimsWrong"
 	atCnfClaimMissing   = "atCnfClaimMissing"
 	atCnfClaimWrong     = "atCnfClaimWrong"
+	nonceClaimReused    = "nonceClaimReused"
 )
 
 func GeneratePoPToken(ts int64, hostName, kid, nonce string) (string, error) {
@@ -239,13 +240,16 @@ func GeneratePoPToken(ts int64, hostName, kid, nonce string) (string, error) {
 }
 
 func TestPopTokenVerifier_Verify(t *testing.T) {
-	verifier := NewPoPVerifier("testHostname", 15*time.Minute)
+	verifier := NewPoPVerifier("testHostname", 1*time.Second)
 
 	validToken, _ := GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce")
 	_, err := verifier.ValidatePopToken(validToken)
 	assert.NoError(t, err)
 
 	// Test for replay attack
+	_, err = verifier.ValidatePopToken(validToken)
+	assert.EqualError(t, err, "Invalid token. 'nonce' claim is reused")
+
 	validToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce")
 	_, err = verifier.ValidatePopToken(validToken)
 	assert.EqualError(t, err, "Invalid token. 'nonce' claim is reused")
@@ -305,4 +309,15 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", atCnfClaimWrong, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "PoP token validate failed: 'cnf' claim mismatch")
+
+	verifier.mapCacheRetentionBuffer = 0
+	// Testing map cache cleanup
+	validToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce1")
+	_, err = verifier.ValidatePopToken(validToken)
+	assert.NoError(t, err)
+	// Wait for cache to be cleaned up
+	time.Sleep(2 * time.Second)
+
+	_, err = verifier.ValidatePopToken(validToken)
+	assert.NoError(t, err)
 }
