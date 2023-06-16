@@ -310,14 +310,15 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "PoP token validate failed: 'cnf' claim mismatch")
 
-	verifier.mapCacheRetentionBuffer = 0
+	verifierNonce := NewPoPVerifier("testHostname", 1*time.Second)
+	verifierNonce.mapCacheRetentionBuffer = 0
 	// Testing map cache cleanup
 	validToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce1")
-	_, err = verifier.ValidatePopToken(validToken)
+	_, err = verifierNonce.ValidatePopToken(validToken)
 	assert.NoError(t, err)
 	// Wait for cache to be cleaned up
 	time.Sleep(2 * time.Second)
 
-	_, err = verifier.ValidatePopToken(validToken)
+	_, err = verifierNonce.ValidatePopToken(validToken)
 	assert.NoError(t, err)
 }
