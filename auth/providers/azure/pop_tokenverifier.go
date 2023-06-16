@@ -35,10 +35,8 @@ import (
 	"k8s.io/klog/v2"
 )
 
-var (
-	// create a cache to save nonce claim to make sure the nonce is not reused
-	nonceMap = nonceCache{v: make(map[string]time.Time)}
-)
+// create a cache to save nonce claim to make sure the nonce is not reused
+var nonceMap = nonceCache{v: make(map[string]time.Time)}
 
 type nonceCache struct {
 	mu sync.Mutex
