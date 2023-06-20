@@ -322,3 +322,55 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 	_, err = verifierNonce.ValidatePopToken(validToken)
 	assert.NoError(t, err)
 }
+
+func TestPopTokenVerifier_VerifySameNonce(t *testing.T) {
+	nonceClaim := "nonceTest"
+	hostnameClaim := "testHostname"
+	getToken := func(ts int64) (string, error) {
+		popKey, err := NewSWPoPKey()
+		if err != nil {
+			return "", fmt.Errorf("Failed to generate Pop key. Error:%+v", err)
+		}
+
+		key, err := NewSwkKey()
+		if err != nil {
+			return "", fmt.Errorf("Failed to generate SF key. Error:%+v", err)
+		}
+
+		cnf := popKey.KeyID()
+		accessTokenData := fmt.Sprintf(popAccessToken, time.Now().Add(time.Minute*5).Unix(), cnf)
+		at, err := key.GenerateToken([]byte(accessTokenData))
+		if err != nil {
+			return "", fmt.Errorf("Error when generating token. Error:%+v", err)
+		}
+		// Hardcoding nonce to test cache
+		nonce := strings.Replace(nonceClaim, "-", "", -1)
+		keyID := popKey.KeyID()
+		algo := popKey.Alg()
+		typ := "pop"
+		header := fmt.Sprintf(`{"typ":"%s","alg":"%s","kid":"%s"}`, typ, algo, keyID)
+		headerB64 := base64.RawURLEncoding.EncodeToString([]byte(header))
+		var payload, payloadB64 string
+		payload = fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}, "nonce":"%s"}`, at, ts, hostnameClaim, popKey.Jwk(), nonce)
+		payloadB64 = base64.RawURLEncoding.EncodeToString([]byte(payload))
+		h256 := sha256.Sum256([]byte(headerB64 + "." + payloadB64))
+		signature, err := popKey.Sign(h256[:])
+		if err != nil {
+			return "", fmt.Errorf("Error while signing pop key. Error:%+v", err)
+		}
+		signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
+
+		return headerB64 + "." + payloadB64 + "." + signatureB64, nil
+	}
+	token1, err := getToken(time.Now().Unix())
+	assert.NoError(t, err)
+	token2, err := getToken(time.Now().Unix())
+	assert.NoError(t, err)
+
+	verifier := NewPoPVerifier(hostnameClaim, 1*time.Second)
+	_, err = verifier.ValidatePopToken(token1)
+	assert.NoError(t, err)
+
+	_, err = verifier.ValidatePopToken(token2)
+	assert.EqualError(t, err, "Invalid token. 'nonce' claim is reused")
+}
