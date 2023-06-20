@@ -41,14 +41,6 @@ var nonceMap = nonceCache{v: make(map[string]time.Time)}
 type nonceCache struct {
 	mu sync.Mutex
 	v  map[string]time.Time
-	// counter to keep track of the number of nonce claims in the cache
-	counter int
-}
-
-func (c *nonceCache) Dec(key string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.counter--
 }
 
 func (c *nonceCache) AddToCache(key string) error {
@@ -58,7 +50,6 @@ func (c *nonceCache) AddToCache(key string) error {
 		return errors.Errorf("nonce claim already exists")
 	}
 	c.v[key] = time.Now()
-	c.counter++
 	return nil
 }
 
@@ -66,13 +57,12 @@ func (c *nonceCache) RemoveFromCache(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.v, key)
-	c.counter--
 }
 
 func (c *nonceCache) GetCounter() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.counter
+	return len(c.v)
 }
 
 // PopTokenVerifier is validator for PoP tokens.
