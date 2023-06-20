@@ -327,7 +327,7 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 func TestPopTokenVerifier_VerifySameNonce(t *testing.T) {
 	nonceClaim := "nonceTest"
 	hostnameClaim := "testHostname"
-	getTokens := func(ts int64) (string, string, error) {
+	getTokens := func() (string, string, error) {
 		popKey, err := NewSWPoPKey()
 		if err != nil {
 			return "", "", fmt.Errorf("Failed to generate Pop key. Error:%+v", err)
