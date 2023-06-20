@@ -367,7 +367,7 @@ func TestPopTokenVerifier_VerifySameNonce(t *testing.T) {
 		}
 		return tokens[0], tokens[1], nil
 	}
-	token1, token2, err := getTokens(time.Now().Unix())
+	token1, token2, err := getTokens()
 	assert.NoError(t, err)
 
 	verifier := NewPoPVerifier(hostnameClaim, 1*time.Second)
