@@ -323,25 +323,26 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestPopTokenVerifier_VerifySameNonce tests that the nonce is not reused using same token with different timestamp
 func TestPopTokenVerifier_VerifySameNonce(t *testing.T) {
 	nonceClaim := "nonceTest"
 	hostnameClaim := "testHostname"
-	getToken := func(ts int64) (string, error) {
+	getTokens := func(ts int64) (string, string, error) {
 		popKey, err := NewSWPoPKey()
 		if err != nil {
-			return "", fmt.Errorf("Failed to generate Pop key. Error:%+v", err)
+			return "", "", fmt.Errorf("Failed to generate Pop key. Error:%+v", err)
 		}
 
 		key, err := NewSwkKey()
 		if err != nil {
-			return "", fmt.Errorf("Failed to generate SF key. Error:%+v", err)
+			return "", "", fmt.Errorf("Failed to generate SF key. Error:%+v", err)
 		}
 
 		cnf := popKey.KeyID()
 		accessTokenData := fmt.Sprintf(popAccessToken, time.Now().Add(time.Minute*5).Unix(), cnf)
 		at, err := key.GenerateToken([]byte(accessTokenData))
 		if err != nil {
-			return "", fmt.Errorf("Error when generating token. Error:%+v", err)
+			return "", "", fmt.Errorf("Error when generating token. Error:%+v", err)
 		}
 		// Hardcoding nonce to test cache
 		nonce := strings.Replace(nonceClaim, "-", "", -1)
@@ -350,21 +351,23 @@ func TestPopTokenVerifier_VerifySameNonce(t *testing.T) {
 		typ := "pop"
 		header := fmt.Sprintf(`{"typ":"%s","alg":"%s","kid":"%s"}`, typ, algo, keyID)
 		headerB64 := base64.RawURLEncoding.EncodeToString([]byte(header))
-		var payload, payloadB64 string
-		payload = fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}, "nonce":"%s"}`, at, ts, hostnameClaim, popKey.Jwk(), nonce)
-		payloadB64 = base64.RawURLEncoding.EncodeToString([]byte(payload))
-		h256 := sha256.Sum256([]byte(headerB64 + "." + payloadB64))
-		signature, err := popKey.Sign(h256[:])
-		if err != nil {
-			return "", fmt.Errorf("Error while signing pop key. Error:%+v", err)
+		var tokens []string
+		for i := 0; i < 2; i++ {
+			payload := fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}, "nonce":"%s"}`, at, time.Now().Unix(), hostnameClaim, popKey.Jwk(), nonce)
+			payloadB64 := base64.RawURLEncoding.EncodeToString([]byte(payload))
+			h256 := sha256.Sum256([]byte(headerB64 + "." + payloadB64))
+			signature, err := popKey.Sign(h256[:])
+			if err != nil {
+				return "", "", fmt.Errorf("Error while signing pop key. Error:%+v", err)
+			}
+			signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
+			tokens = append(tokens, headerB64+"."+payloadB64+"."+signatureB64)
+			// enforcing different timestamp
+			time.Sleep(1 * time.Second)
 		}
-		signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
-
-		return headerB64 + "." + payloadB64 + "." + signatureB64, nil
+		return tokens[0], tokens[1], nil
 	}
-	token1, err := getToken(time.Now().Unix())
-	assert.NoError(t, err)
-	token2, err := getToken(time.Now().Unix())
+	token1, token2, err := getTokens(time.Now().Unix())
 	assert.NoError(t, err)
 
 	verifier := NewPoPVerifier(hostnameClaim, 1*time.Second)
