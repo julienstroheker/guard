@@ -145,7 +145,7 @@ func (p *PoPTokenVerifier) ValidatePopToken(token string) (string, error) {
 	var issuedTime time.Time
 	if ts, ok := claims["ts"]; ok {
 		convertTime(ts, &issuedTime)
-		expireat := issuedTime.Add(p.PoPTokenValidityDuration * time.Minute)
+		expireat := issuedTime.Add(p.PoPTokenValidityDuration)
 		if expireat.Before(now) {
 			return "", errors.Errorf("Token is expired. Now: %v, Valid till: %v", now, expireat)
 		}
@@ -185,7 +185,7 @@ func (p *PoPTokenVerifier) ValidatePopToken(token string) (string, error) {
 		return "", errors.Errorf("Invalid token. 'nonce' claim is reused")
 	}
 	klog.V(6).Infof("nonce claim added to the cache. Cache size is: %d", nonceMap.GetCounter())
-	// Cleaning cached nonce token after PoPTokenValidityDuration minutes + 1 minute
+	// Cleaning cached nonce token after PoPTokenValidityDuration minutes + 1 minute by default
 	go func() {
 		time.Sleep((p.PoPTokenValidityDuration + p.mapCacheRetentionBuffer))
 		nonceMap.RemoveFromCache(nonce)

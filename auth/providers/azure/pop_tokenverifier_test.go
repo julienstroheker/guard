@@ -134,6 +134,58 @@ func (swk *swKey) GenerateToken(payload []byte) (string, error) {
 	return token, nil
 }
 
+type header struct {
+	typ string `json:"typ"`
+	alg string `json:"alg"`
+	kid string `json:"kid"`
+}
+
+type cnf struct {
+	jwk string `json:"jwk"`
+}
+
+type payload struct {
+	at    string `json:"at"`
+	ts    int64  `json:"ts"`
+	u     string `json:"u"`
+	cnf   cnf    `json:"cnf"`
+	nonce string `json:"nonce"`
+}
+
+type popTokenForTest struct {
+	h header
+	p payload
+}
+
+func GeneratePopToken() popTokenForTest {
+	pop := popTokenForTest{}
+	pop.h = newHeader("JWT", "RS256", uuid.New().String())
+	pop.p = payload{
+		at:    "client",
+		ts:    time.Now().Unix(),
+		u:     "kd",
+		cnf:   cnf{pop.h.ToBase64(pop.h.ToString())},
+		nonce: uuid.New().String(),
+	}
+	return pop
+}
+
+func newHeader(typ, alg, kid string) header {
+	return popTokenForTest.header{typ: typ, alg: alg, kid: kid}
+}
+
+func (h *header) WrongTyp() string {
+	return fmt.Sprintf(`{"typ":"%d","alg":"%s","kid":"%s"}`, h.wrongTyp, h.alg, h.kid)
+}
+
+func (h *header) ToString() string {
+	return fmt.Sprintf(`{"typ":"%s","alg":"%s","kid":"%s"}`, h.typ, h.alg, h.kid)
+}
+
+func (h *header) ToBase64(val string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(val))
+}
+
 const (
 	badTokenKey         = "badToken"
 	headerBadKeyID      = "headerBadKeyID"
@@ -182,7 +234,6 @@ func GeneratePoPToken(ts int64, hostName, kid, nonce string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("Error when generating token. Error:%+v", err)
 	}
-	var header, headerB64 string
 	if nonce == "" {
 		nonce = uuid.New().String()
 	}
@@ -199,11 +250,13 @@ func GeneratePoPToken(ts int64, hostName, kid, nonce string) (string, error) {
 	if kid == headerBadtyp {
 		typ = "wrong"
 	}
-	header = fmt.Sprintf(`{"typ":"%s","alg":"%s","kid":"%s"}`, typ, algo, keyID)
-
+	// var header, headerB64 string
+	// header = fmt.Sprintf(`{"typ":"%s","alg":"%s","kid":"%s"}`, typ, algo, keyID)
+	var header string
+	h := newHeader(typ, algo, keyID)
+	header = h.ToString()
 	if kid == headerBadtypType {
-		wrongTyp := 1
-		header = fmt.Sprintf(`{"typ":"%d","alg":"%s","kid":"%s"}`, wrongTyp, algo, keyID)
+		header = h.WrongTyp()
 	}
 
 	if kid == headerBadtypMissing {
@@ -240,7 +293,7 @@ func GeneratePoPToken(ts int64, hostName, kid, nonce string) (string, error) {
 }
 
 func TestPopTokenVerifier_Verify(t *testing.T) {
-	verifier := NewPoPVerifier("testHostname", 1*time.Second)
+	verifier := NewPoPVerifier("testHostname", 1*time.Minute)
 
 	validToken, _ := GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce")
 	_, err := verifier.ValidatePopToken(validToken)
@@ -278,9 +331,10 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "Invalid token. 'typ' claim is missing")
 
-	expiredToken, _ := GeneratePoPToken(time.Now().Add(time.Minute*-20).Unix(), "", "", "")
+	expiredToken, _ := GeneratePoPToken(time.Now().Add(time.Minute*-2).Unix(), "", "", "")
 	_, err = verifier.ValidatePopToken(expiredToken)
 	assert.NotNilf(t, err, "PoP verification succeed.")
+	assert.Contains(t, err.Error(), "Token is expired")
 
 	invalidToken, _ = GeneratePoPToken(time.Now().Unix(), "", tsClaimsMissing, "")
 	_, err = verifier.ValidatePopToken(invalidToken)
@@ -310,8 +364,8 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 	_, err = verifier.ValidatePopToken(invalidToken)
 	assert.EqualError(t, err, "PoP token validate failed: 'cnf' claim mismatch")
 
-	verifierNonce := NewPoPVerifier("testHostname", 1*time.Second)
-	verifierNonce.mapCacheRetentionBuffer = 0
+	verifierNonce := NewPoPVerifier("testHostname", 5*time.Second)
+	verifierNonce.mapCacheRetentionBuffer = -5 * time.Second
 	// Testing map cache cleanup
 	validToken, _ = GeneratePoPToken(time.Now().Unix(), "testHostname", "", "randomnonce1")
 	_, err = verifierNonce.ValidatePopToken(validToken)
@@ -370,7 +424,7 @@ func TestPopTokenVerifier_VerifySameNonce(t *testing.T) {
 	token1, token2, err := getTokens()
 	assert.NoError(t, err)
 
-	verifier := NewPoPVerifier(hostnameClaim, 1*time.Second)
+	verifier := NewPoPVerifier(hostnameClaim, 5*time.Second)
 	_, err = verifier.ValidatePopToken(token1)
 	assert.NoError(t, err)
 
