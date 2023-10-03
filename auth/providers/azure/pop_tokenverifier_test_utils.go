@@ -292,10 +292,10 @@ func (b *PoPTokenBuilderImpl) SetPayload() error {
 		payload = fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}, "nonce":"%s"}`, fmt.Sprintf("%s.%s.%s", BadTokenKey, BadTokenKey, BadTokenKey), b.ts, b.hostName, b.popKey.Jwk(), b.nonce)
 	}
 	if b.kid == NonceClaimMissing {
-		payload = fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}}`, fmt.Sprintf("%s.%s.%s", BadTokenKey, BadTokenKey, BadTokenKey), b.ts, b.hostName, b.popKey.Jwk())
+		payload = fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}}`, at, b.ts, b.hostName, b.popKey.Jwk())
 	}
 	if b.kid == NonceClaimNotString {
-		payload = fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}, "nonce":%d}`, fmt.Sprintf("%s.%s.%s", BadTokenKey, BadTokenKey, BadTokenKey), b.ts, b.hostName, b.popKey.Jwk(), 1)
+		payload = fmt.Sprintf(`{ "at" : "%s", "ts" : %d, "u": "%s", "cnf":{"jwk":%s}, "nonce":%d}`, at, b.ts, b.hostName, b.popKey.Jwk(), 1)
 	}
 	b.token.Payload = base64.RawURLEncoding.EncodeToString([]byte(payload))
 	return nil

@@ -27,7 +27,7 @@ import (
 )
 
 func TestPopTokenVerifier_Verify(t *testing.T) {
-	verifier := azure.NewPoPVerifier("testHostname", 15*time.Minute)
+	verifier := azure.NewPoPVerifier("testHostname", 15*time.Minute, 1*time.Minute)
 
 	// Test cases where no error is expected
 	noErrorTestCases := []struct {
@@ -168,7 +168,7 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 			desc:      "'nonce' claim in the payload is not a string",
 			kid:       azure.NonceClaimNotString,
 			hostname:  "testHostname",
-			errString: "Invalid token. 'nonce' claim should be of string",
+			errString: "Invalid token. 'nonce' claim should be of type string",
 		},
 	}
 	for _, tC := range testCases {
@@ -232,12 +232,16 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 		assert.Containsf(t, err.Error(), "Token is expired", "Error message is not as expected")
 	})
 
-	t.Run("'nonce' claim been reused.", func(t *testing.T) {
+	t.Run("'nonce' claim been reused - Cache validation", func(t *testing.T) {
+		nonceVerifier := azure.NewPoPVerifier("testHostname", 4*time.Second, -3*time.Second)
 		validToken, _ := azure.NewPoPTokenBuilder().SetTimestamp(time.Now().Unix()).SetHostName("testHostname").SetKid(azure.NonceClaimHardcoded).GetToken()
-		_, err := verifier.ValidatePopToken(validToken)
+		_, err := nonceVerifier.ValidatePopToken(validToken)
 		assert.NoError(t, err)
 		validToken, _ = azure.NewPoPTokenBuilder().SetTimestamp(time.Now().Unix()).SetHostName("testHostname").SetKid(azure.NonceClaimHardcoded).GetToken()
-		_, err = verifier.ValidatePopToken(validToken)
+		_, err = nonceVerifier.ValidatePopToken(validToken)
 		assert.Containsf(t, err.Error(), "Invalid token. 'nonce' claim is reused", "Error message is not as expected")
+		time.Sleep(2 * time.Second)
+		_, err = nonceVerifier.ValidatePopToken(validToken)
+		assert.NoError(t, err)
 	})
 }

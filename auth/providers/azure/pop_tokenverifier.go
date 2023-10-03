@@ -72,11 +72,11 @@ type PoPTokenVerifier struct {
 	mapCacheRetentionBuffer  time.Duration
 }
 
-func NewPoPVerifier(hostName string, popTokenValidityDuration time.Duration) *PoPTokenVerifier {
+func NewPoPVerifier(hostName string, popTokenValidityDuration, cacheRetentionBuffer time.Duration) *PoPTokenVerifier {
 	return &PoPTokenVerifier{
 		PoPTokenValidityDuration: popTokenValidityDuration,
 		hostName:                 hostName,
-		mapCacheRetentionBuffer:  1 * time.Minute,
+		mapCacheRetentionBuffer:  cacheRetentionBuffer,
 	}
 }
 
@@ -169,28 +169,6 @@ func (p *PoPTokenVerifier) ValidatePopToken(token string) (string, error) {
 		return "", errors.Errorf("Invalid token. 'u' claim is missing")
 	}
 
-	// Verify host 'nonce' claim
-	var nonce string
-	if nonceClaim, ok := claims["nonce"]; ok {
-		if _, ok := nonceClaim.(string); !ok {
-			return "", errors.Errorf("Invalid token. 'nonce' claim should be of string")
-		}
-		nonce = nonceClaim.(string)
-	} else {
-		return "", errors.Errorf("Invalid token. 'nonce' claim is missing")
-	}
-	// Making sure nonce is not reused
-	err = nonceMap.AddToCache(nonce)
-	if err != nil {
-		return "", errors.Errorf("Invalid token. 'nonce' claim is reused")
-	}
-	klog.V(6).Infof("nonce claim added to the cache. Cache size is: %d", nonceMap.GetCounter())
-	// Cleaning cached nonce token after PoPTokenValidityDuration minutes + 1 minute by default
-	go func() {
-		time.Sleep((p.PoPTokenValidityDuration + p.mapCacheRetentionBuffer))
-		nonceMap.RemoveFromCache(nonce)
-	}()
-
 	// "cnf" (confirmation) claim used to cryptographically confirm
 	// that the presenter has possession of that key.
 	// The value of the "cnf" claim is a JSON object and the
@@ -264,6 +242,28 @@ func (p *PoPTokenVerifier) ValidatePopToken(token string) (string, error) {
 	if err != nil {
 		return "", errors.Errorf("RSA verify err: %+v", err)
 	}
+
+	// Verify host 'nonce' claim
+	var nonce string
+	if nonceClaim, ok := claims["nonce"]; ok {
+		if _, ok := nonceClaim.(string); !ok {
+			return "", errors.Errorf("Invalid token. 'nonce' claim should be of type string")
+		}
+		nonce = nonceClaim.(string)
+	} else {
+		return "", errors.Errorf("Invalid token. 'nonce' claim is missing")
+	}
+	// Making sure nonce is not reused
+	err = nonceMap.AddToCache(nonce)
+	if err != nil {
+		return "", errors.Errorf("Invalid token. 'nonce' claim is reused")
+	}
+	klog.V(6).Infof("nonce claim added to the cache. Cache size is: %d", nonceMap.GetCounter())
+	// Cleaning cached nonce token after PoPTokenValidityDuration minutes + 1 minute by default
+	go func() {
+		time.Sleep(p.PoPTokenValidityDuration + p.mapCacheRetentionBuffer)
+		nonceMap.RemoveFromCache(nonce)
+	}()
 
 	return claims["at"].(string), nil
 }
