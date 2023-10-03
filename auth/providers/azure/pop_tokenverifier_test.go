@@ -158,6 +158,18 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 			hostname:  "testHostname",
 			errString: "Invalid token. access token missing",
 		},
+		{
+			desc:      "'nonce' claim in the payload is missing",
+			kid:       azure.NonceClaimMissing,
+			hostname:  "testHostname",
+			errString: "Invalid token. 'nonce' claim is missing",
+		},
+		{
+			desc:      "'nonce' claim in the payload is not a string",
+			kid:       azure.NonceClaimNotString,
+			hostname:  "testHostname",
+			errString: "Invalid token. 'nonce' claim should be of string",
+		},
 	}
 	for _, tC := range testCases {
 		t.Run(tC.desc, func(t *testing.T) {
@@ -218,5 +230,14 @@ func TestPopTokenVerifier_Verify(t *testing.T) {
 		invalidToken, _ := azure.NewPoPTokenBuilder().SetTimestamp(time.Now().Unix()).SetHostName("testHostname").SetKid(azure.TsClaimsTypeUnknown).GetToken()
 		_, err := verifier.ValidatePopToken(invalidToken)
 		assert.Containsf(t, err.Error(), "Token is expired", "Error message is not as expected")
+	})
+
+	t.Run("'nonce' claim been reused.", func(t *testing.T) {
+		validToken, _ := azure.NewPoPTokenBuilder().SetTimestamp(time.Now().Unix()).SetHostName("testHostname").SetKid(azure.NonceClaimHardcoded).GetToken()
+		_, err := verifier.ValidatePopToken(validToken)
+		assert.NoError(t, err)
+		validToken, _ = azure.NewPoPTokenBuilder().SetTimestamp(time.Now().Unix()).SetHostName("testHostname").SetKid(azure.NonceClaimHardcoded).GetToken()
+		_, err = verifier.ValidatePopToken(validToken)
+		assert.Containsf(t, err.Error(), "Invalid token. 'nonce' claim is reused", "Error message is not as expected")
 	})
 }
