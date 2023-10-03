@@ -24,6 +24,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"go.kubeguard.dev/guard/auth"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/coreos/go-oidc"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
@@ -79,19 +81,80 @@ type authInfo struct {
 	Issuer      string
 }
 
+// TODO: combine auth info and issuer into one
+var (
+	cachedAuthInfo *authInfo
+	mutex          = &sync.Mutex{}
+
+	cachedOIDCIssuerProvider       *oidc.Provider
+	cachedOIDCIssuerProvidersMutex = &sync.RWMutex{}
+)
+
+// getCachedOIDCIssuerProviderUnsafe returns the cached OIDC issuer provider and whether it exists.
+// It requires the caller to hold the cachedOIDCIssuerProvidersMutex.
+func getCachedOIDCIssuerProviderUnsafe() (*oidc.Provider, bool) {
+	if cachedOIDCIssuerProvider == nil {
+		return nil, false
+	}
+	return cachedOIDCIssuerProvider, true
+}
+
+func getOIDCIssuerProvider(issuerURL string, issuerGetRetryCount int) (*oidc.Provider, error) {
+	cachedOIDCIssuerProvidersMutex.RLock()
+	// fast path: read from cache
+	if cached, ok := getCachedOIDCIssuerProviderUnsafe(); ok {
+		cachedOIDCIssuerProvidersMutex.RUnlock()
+		return cached, nil
+	}
+	cachedOIDCIssuerProvidersMutex.RUnlock()
+
+	// slow path: construct from remote
+	// NOTE: we hold the lock even it's doing HTTP call to avoid sending multiple requests
+	cachedOIDCIssuerProvidersMutex.Lock()
+	defer cachedOIDCIssuerProvidersMutex.Unlock()
+
+	if cached, ok := getCachedOIDCIssuerProviderUnsafe(); ok {
+		// another goroutine has already constructed the provider
+		return cached, nil
+	}
+
+	// NOTE: we start a root context here to allow background remote key set refresh
+	ctx := context.Background()
+	ctx = withRetryableHttpClient(ctx, issuerGetRetryCount)
+	provider, err := oidc.NewProvider(ctx, issuerURL)
+	if err != nil {
+		// failed in this attempt, let other attempts retry
+		return nil, errors.Wrap(err, "failed to create provider for azure")
+	}
+
+	cachedOIDCIssuerProvider = provider
+
+	return provider, nil
+}
+
+// New is called per authentication request
 func New(ctx context.Context, opts Options) (auth.Interface, error) {
 	c := &Authenticator{
 		Options: opts,
 	}
-	authInfoVal, err := getAuthInfo(ctx, c.Environment, c.TenantID, getMetadata)
-	if err != nil {
-		return nil, err
+
+	if cachedAuthInfo == nil {
+		mutex.Lock()
+		defer mutex.Unlock()
+		if cachedAuthInfo == nil {
+			// getAuthInfo gets the issuer, graph, and AAD endpoints from the Azure metadata endpoint
+			// since it won't change at all, we can cache it
+			authInfoVal, err := getAuthInfo(ctx, c.Environment, c.TenantID, c.HttpClientRetryCount, getMetadata)
+			if err != nil {
+				return nil, err
+			}
+			cachedAuthInfo = authInfoVal
+		}
 	}
 
-	klog.V(3).Infof("Using issuer url: %v", authInfoVal.Issuer)
+	klog.V(3).Infof("Using issuer url: %v", cachedAuthInfo.Issuer)
 
-	ctx = withRetryableHttpClient(ctx)
-	provider, err := oidc.NewProvider(ctx, authInfoVal.Issuer)
+	provider, err := getOIDCIssuerProvider(cachedAuthInfo.Issuer, c.HttpClientRetryCount)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create provider for azure")
 	}
@@ -103,13 +166,13 @@ func New(ctx context.Context, opts Options) (auth.Interface, error) {
 
 	switch opts.AuthMode {
 	case ClientCredentialAuthMode:
-		c.graphClient, err = graph.New(c.ClientID, c.ClientSecret, c.TenantID, c.UseGroupUID, authInfoVal.AADEndpoint, authInfoVal.MSGraphHost)
+		c.graphClient, err = graph.New(c.ClientID, c.ClientSecret, c.TenantID, c.UseGroupUID, cachedAuthInfo.AADEndpoint, cachedAuthInfo.MSGraphHost)
 	case ARCAuthMode:
 		c.graphClient, err = graph.NewWithARC(c.ClientID, c.ResourceId, c.TenantID, c.AzureRegion)
 	case OBOAuthMode:
-		c.graphClient, err = graph.NewWithOBO(c.ClientID, c.ClientSecret, c.TenantID, authInfoVal.AADEndpoint, authInfoVal.MSGraphHost)
+		c.graphClient, err = graph.NewWithOBO(c.ClientID, c.ClientSecret, c.TenantID, cachedAuthInfo.AADEndpoint, cachedAuthInfo.MSGraphHost)
 	case AKSAuthMode:
-		c.graphClient, err = graph.NewWithAKS(c.AKSTokenURL, c.TenantID, authInfoVal.MSGraphHost)
+		c.graphClient, err = graph.NewWithAKS(c.AKSTokenURL, c.TenantID, cachedAuthInfo.MSGraphHost)
 	}
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to create ms graph client")
@@ -118,8 +181,8 @@ func New(ctx context.Context, opts Options) (auth.Interface, error) {
 }
 
 // makeRetryableHttpClient creates an HTTP client which attempts the request
-// 3 times and has a 3 second timeout per attempt.
-func makeRetryableHttpClient() retryablehttp.Client {
+// (1 + retryCount) times and has a 3 second timeout per attempt.
+func makeRetryableHttpClient(retryCount int) retryablehttp.Client {
 	// Copy the default HTTP client so we can set a timeout.
 	// (It uses the same transport since the pointer gets copied)
 	httpClient := *httpclient.DefaultHTTPClient
@@ -130,7 +193,7 @@ func makeRetryableHttpClient() retryablehttp.Client {
 		HTTPClient:   &httpClient,
 		RetryWaitMin: 500 * time.Millisecond,
 		RetryWaitMax: 2 * time.Second,
-		RetryMax:     2, // initial + 2 retries = 3 attempts
+		RetryMax:     retryCount, // initial + retryCount retries = (1 + retryCount) attempts
 		CheckRetry:   retryablehttp.DefaultRetryPolicy,
 		Backoff:      retryablehttp.DefaultBackoff,
 		Logger:       log.Default(),
@@ -141,8 +204,8 @@ func makeRetryableHttpClient() retryablehttp.Client {
 // *http.Client made from makeRetryableHttpClient.
 // Some of the libraries we use will take the client out of the context via
 // oauth2.HTTPClient and use it, so this way we can add retries to external code.
-func withRetryableHttpClient(ctx context.Context) context.Context {
-	retryClient := makeRetryableHttpClient()
+func withRetryableHttpClient(ctx context.Context, retryCount int) context.Context {
+	retryClient := makeRetryableHttpClient(retryCount)
 	return context.WithValue(ctx, oauth2.HTTPClient, retryClient.StandardClient())
 }
 
@@ -152,9 +215,9 @@ type metadataJSON struct {
 }
 
 // https://docs.microsoft.com/en-us/azure/active-directory/develop/howto-convert-app-to-be-multi-tenant
-func getMetadata(ctx context.Context, aadEndpoint, tenantID string) (*metadataJSON, error) {
+func getMetadata(ctx context.Context, aadEndpoint, tenantID string, retryCount int) (*metadataJSON, error) {
 	metadataURL := aadEndpoint + tenantID + "/.well-known/openid-configuration"
-	retryClient := makeRetryableHttpClient()
+	retryClient := makeRetryableHttpClient(retryCount)
 
 	request, err := retryablehttp.NewRequest("GET", metadataURL, nil)
 	if err != nil {
@@ -198,9 +261,14 @@ func (s Authenticator) Check(ctx context.Context, token string) (*authv1.UserInf
 		}
 	}
 
-	ctx = withRetryableHttpClient(ctx)
+	ctx = withRetryableHttpClient(ctx, s.HttpClientRetryCount)
 	idToken, err := s.verifier.Verify(ctx, token)
 	if err != nil {
+		if klog.V(7).Enabled() {
+			if claims, err := extractTokenClaims(token); err == nil {
+				klog.V(7).Infof("token claims: %s", claims)
+			}
+		}
 		return nil, errors.Wrap(err, "failed to verify token for azure")
 	}
 
@@ -365,9 +433,9 @@ func (c claims) string(key string) (string, error) {
 	return s, nil
 }
 
-type getMetadataFunc = func(context.Context, string, string) (*metadataJSON, error)
+type getMetadataFunc = func(context.Context, string, string, int) (*metadataJSON, error)
 
-func getAuthInfo(ctx context.Context, environment, tenantID string, getMetadata getMetadataFunc) (*authInfo, error) {
+func getAuthInfo(ctx context.Context, environment, tenantID string, retryCount int, getMetadata getMetadataFunc) (*authInfo, error) {
 	var err error
 	env := azure.PublicCloud
 	if environment != "" {
@@ -377,7 +445,7 @@ func getAuthInfo(ctx context.Context, environment, tenantID string, getMetadata 
 		}
 	}
 
-	metadata, err := getMetadata(ctx, env.ActiveDirectoryEndpoint, tenantID)
+	metadata, err := getMetadata(ctx, env.ActiveDirectoryEndpoint, tenantID, retryCount)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get metadata for azure")
 	}
@@ -392,4 +460,21 @@ func getAuthInfo(ctx context.Context, environment, tenantID string, getMetadata 
 		MSGraphHost: msgraphHost,
 		Issuer:      metadata.Issuer,
 	}, nil
+}
+
+func extractTokenClaims(rawToken string) (string, error) {
+	token, _, err := new(jwt.Parser).ParseUnverified(rawToken, jwt.MapClaims{})
+	if err != nil {
+		return "", err
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok {
+		payload, err := json.Marshal(claims)
+		if err != nil {
+			return "", err
+		}
+		return string(payload), nil
+	}
+
+	return "", errors.New("Invalid JWT Token")
 }
